@@ -3,7 +3,7 @@
 //! Used as a baseline in parity tests against the real Bifrost adapter
 //! (per ADR-050 § "Hello-world port + bifrost lib wrapper").
 
-use crate::decision::{Decision, Request, Response};
+use crate::decision::{Decision, DecisionError, DecisionLayer, Request, Response};
 
 /// Response from a [`HelloWorldPort`] invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,16 +40,66 @@ impl HelloWorldPort for HelloWorld {
     }
 }
 
+// `HelloWorld` is also a `DecisionLayer` so it can be plugged into the
+// same chaos-matrix / OTLP-recorder harness as `BifrostAdapter`. The
+// decision is a no-op (always Allow); the rest of the fixture shape
+// (id + payload trace fields) is preserved.
+impl DecisionLayer for HelloWorld {
+    fn name(&self) -> &str {
+        "hello-world"
+    }
+
+    fn adapter_kind(&self) -> &str {
+        "hello-world"
+    }
+
+    fn health(&self) -> Result<(), DecisionError> {
+        Ok(())
+    }
+
+    fn decide(&self, req: &Request) -> Response {
+        hello_response(req)
+    }
+}
+
 /// Helper for callers that need a [`Response`] view of a hello-world
 /// invocation.
 pub fn hello_response(req: &Request) -> Response {
     let hw = HelloWorld.hello(req);
-    Response {
-        decision: hw.decision,
-        trace: vec![
-            ("router.port".to_string(), "hello-world".to_string()),
-            ("router.id".to_string(), hw.id),
-            ("router.payload".to_string(), hw.payload),
-        ],
+    Response::allow()
+        .with_trace("router.port", "hello-world")
+        .with_trace("router.id", hw.id)
+        .with_trace("router.payload", hw.payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hello_world_port_echoes_request() {
+        let hw = HelloWorld;
+        let r = Request::new("tool:echo", "hello");
+        let out = hw.hello(&r);
+        assert_eq!(out.id, "tool:echo");
+        assert_eq!(out.payload, "hello");
+        assert_eq!(out.decision, Decision::Allow);
+    }
+
+    #[test]
+    fn hello_world_decision_layer_metadata() {
+        let hw = HelloWorld;
+        assert_eq!(hw.name(), "hello-world");
+        assert_eq!(hw.adapter_kind(), "hello-world");
+        assert!(hw.health().is_ok());
+    }
+
+    #[test]
+    fn hello_world_decide_returns_allow_with_trace() {
+        let resp = hello_response(&Request::new("user:1", "p"));
+        assert!(resp.decision.is_allow());
+        assert!(resp.trace.iter().any(|(k, _)| k == "router.port"));
+        assert!(resp.trace.iter().any(|(k, _)| k == "router.id"));
+        assert!(resp.trace.iter().any(|(k, _)| k == "router.payload"));
     }
 }

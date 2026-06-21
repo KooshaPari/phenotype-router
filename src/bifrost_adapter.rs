@@ -23,6 +23,14 @@ impl BifrostAdapter {
 }
 
 impl DecisionLayer for BifrostAdapter {
+    fn name(&self) -> &str {
+        "bifrost"
+    }
+
+    fn adapter_kind(&self) -> &str {
+        "bifrost"
+    }
+
     fn decide(&self, req: &Request) -> Response {
         if req.id.starts_with("deny:") {
             return Response {

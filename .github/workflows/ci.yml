@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Mirror the substrate-quality-bar CI gate from `pheno-ci-templates`
+# (per ADR-040 / ADR-042B / ADR-023 Rule 3.1). The bootstrap-tier
+# runs build + test + chaos + bench + clippy + coverage.
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: cargo build (default features)
+        run: cargo build --all-targets
+      - name: cargo build (no default features)
+        run: cargo build --no-default-features
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: cargo test (default features)
+        run: cargo test --all-targets
+      - name: cargo test (--features chaos)
+        run: cargo test --all-targets --features chaos
+
+  bench:
+    name: bench
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: cargo bench --no-run
+        # `cargo bench` would actually run benches; we just want to verify
+        # the bench targets compile under the release profile.
+        run: cargo bench --bench decision --no-run
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: clippy
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    # Federated-service tier coverage gate per ADR-040 (60 % line).
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Generate coverage
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+      - name: Check coverage gate
+        # Federated-service tier per ADR-040; fails the build if < 60 %.
+        run: |
+          COV=$(cargo llvm-cov --all-features --workspace --summary-only 2>/dev/null | grep -E "line\." | head -1 | awk '{print $2}' | tr -d '%')
+          echo "Line coverage: $COV%"
+          awk -v cov="$COV" 'BEGIN { exit !(cov+0 >= 60) }' || (echo "Coverage gate failed: $COV% < 60%" && exit 1)

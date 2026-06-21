@@ -1,5 +1,23 @@
 # nexus
 
+## Quickstart
+
+> Service registry and discovery for microservices
+
+```bash
+# Clone, build, test
+git clone https://github.com/KooshaPari/nexus.git
+cd nexus
+```
+
+```rust
+// Add to Cargo.toml:
+// nexus = "<version>"
+```
+
+See [SPEC.md](SPEC.md) for the full specification and [llms.txt](llms.txt) for machine-readable metadata.
+
+
 Service registry and discovery for microservices.
 
 ## Features

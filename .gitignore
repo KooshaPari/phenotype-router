@@ -2,3 +2,21 @@
 /Cargo.lock
 **/*.rs.bk
 .DS_Store
+
+# Coverage / benchmark output
+/coverage/
+*.lcov
+*.info
+lcov.info
+/criterion
+target/criterion
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Local dev state
+.env
+.env.local
+*.local

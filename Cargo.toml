@@ -1,0 +1,18 @@
+[package]
+name = "phenotype-router"
+version = "0.1.0"
+edition = "2021"
+description = "Phenotype-owned router decision layer (ADR-050 / ADR-051, §8 router-architecture ACCEPTED 2026-06-20)."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[features]
+# Stub feature placeholder for future Bifrost FFI bridge (currently Go-side;
+# tracked in phenotype-gateway/packages/bifrost and absorbed at runtime via
+# the substrate-boundary port contract).
+bifrost = []
+
+[dependencies]
+thiserror = "1"
+
+[dev-dependencies]

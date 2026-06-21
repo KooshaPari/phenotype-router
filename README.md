@@ -1,85 +1,203 @@
-# `phenotype-router`
+# phenotype-router
 
-> Phenotype-owned router **decision layer** — hexagonal L4 Port/Adapter
-> primitive with OTel-native OTLP span emission. Substrate for all LLM-routing
-> decisions in the Phenotype fleet (ADR-050 / ADR-051, §8 router-architecture
-> ACCEPTED 2026-06-20).
+[![Crates.io](https://img.shields.io/crates/v/phenotype-router.svg)](https://crates.io/crates/phenotype-router)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![71-pillar: L9](https://img.shields.io/badge/71--pillar-L9-blue.svg)](https://phenotype.dev/pillars)
 
-## What
+Phenotype-owned router decision layer (ADR-050 / ADR-051, §8 router-architecture
+ACCEPTED 2026-06-20). This crate owns the **decision layer** of the router architecture —
+the boundary where a `Request` is mapped to a `Response`.
 
-A pure-Rust library that maps a `Request` to a `Response` (decision). The
-**decision layer** is the boundary where LLM-routing decisions are made.
-Every adapter (`BifrostAdapter`, future `SmartFallback`, future
-plugin-chain adapters) plugs into the layer via the [`DecisionLayer`] port
-trait (hexagonal L4 contract per ADR-038).
+This crate is **library-only** — it does not expose HTTP endpoints directly. It is the
+decision-layer substrate that HTTP services (the future `phenotype-router` HTTP wrapper,
+Civis, etc.) build on. The curl blocks below illustrate the typical HTTP wrapper
+integration following the [L9 REST API conventions](#conventions) (RFC 7807 error envelope).
 
-## When
-
-- You need a **portable decision layer** for LLM routing in a fleet
-  service. Every `decide()` call emits an OTel-compatible span
-  (ADR-012 / ADR-036B).
-- You want a **substrate-level hexagonal contract** that future
-  adapters and plugins can plug into without changing call sites.
-- You want **OTel span emission** (no SDK lock-in — the recorder
-  produces OTel-compatible `TraceOperation` values that the consumer
-  wires to the OTel SDK of their choice).
-
-## When NOT
-
-- You need the **transport layer** (use `phenotype-gateway` —
-  Bifrost owns transport, ADR-051).
-- You need the **plugin chain runtime** (v0.5.0; v0.3.0 ships the
-  decision-layer contract that plugins will plug into).
-- You need a **full OTel SDK** with batching, resource attributes, etc.
-  — the recorder is a thin span producer; consumers wire the SDK.
-
-## 5-line quickstart
+## Quickstart (Rust library)
 
 ```rust
-use phenotype_router::{BifrostAdapter, DecisionLayer, Request};
+use phenotype_router::{DecisionLayer, Request, Response, BifrostAdapter};
 
 let adapter = BifrostAdapter::new();
-let req = Request::new("user:42", "weather");
-let resp = adapter.decide(&req);
-assert_eq!(resp.decision.kind_str(), "allow");
+let req = Request {
+    id: "route.chat.completion".to_string(),
+    payload: r#"{"model":"claude-opus-4","messages":[]}"#.to_string(),
+};
+let resp: Response = adapter.decide(&req);
+match resp.decision {
+    phenotype_router::Decision::Allow => println!("allowed"),
+    phenotype_router::Decision::Deny(reason) => println!("denied: {reason}"),
+}
 ```
 
-## Quickstart with OTLP
+## HTTP wrapper curl examples (illustrative)
 
-```rust
-use phenotype_router::otel::{OtelConfig, OtlpDecisionRecorder, TracePort};
-use phenotype_router::{BifrostAdapter, DecisionLayer, Request};
-use std::sync::Arc;
+When `phenotype-router` is wired into an HTTP service, the following curl blocks
+demonstrate the [L9 REST API conventions](#conventions) (RFC 7807 error envelope). The
+`<host>` and `<port>` placeholders must be replaced with the deploying service's values.
 
-let recorder = OtlpDecisionRecorder::in_memory(OtelConfig::default());
-let adapter = BifrostAdapter::new();
-let req = Request::new("user:42", "weather");
-let resp = adapter.decide(&req);
-let op = recorder.build_operation(&adapter, &req, &resp);
-recorder.port().submit(op); // or `recorder.record(&adapter, &req, &resp)`
+### Successful decision (POST 200)
+
+```bash
+curl -sS -X POST \
+  -H "Accept: application/json" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"id":"route.chat.completion","payload":{"model":"claude-opus-4","messages":[]}}' \
+  "https://<host>/api/v1/phenotype-router/decisions"
 ```
 
-See [`docs/concept.md`](docs/concept.md) for the architecture overview.
+Successful response (HTTP 200):
 
-## Install
-
-```toml
-# Cargo.toml
-[dependencies]
-phenotype-router = { git = "https://github.com/KooshaPari/phenotype-router", branch = "main" }
+```json
+{
+  "data": {
+    "decision": "Allow",
+    "trace": [
+      ["adapter", "bifrost"],
+      ["latency_ms", "12"]
+    ]
+  },
+  "page_info": {"has_more": false}
+}
 ```
 
-## Quality bar (ADR-023 Rule 3.1)
+### Denied decision (POST 200 with Deny)
 
-- **Spec:** [`SPEC.md`](SPEC.md) (1 page).
-- **Concept doc:** [`docs/concept.md`](docs/concept.md).
-- **Tests:** 56 total — 32 unit + 6 chaos + 6 hello-world + 4 OTLP smoke + 8 e2e.
-- **Coverage:** 60 % federated-service tier gate (ADR-040).
-- **Observability:** `OtlpDecisionRecorder` (ADR-012 / ADR-036B).
-- **CI:** `.github/workflows/ci.yml`.
-- **Worklog:** [`WORKLOG.md`](WORKLOG.md) (v2.1 schema).
+```bash
+curl -sS -X POST \
+  -H "Accept: application/json" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"id":"route.forbidden.action","payload":{}}' \
+  "https://<host>/api/v1/phenotype-router/decisions"
+```
+
+Response (HTTP 200, body carries the deny reason):
+
+```json
+{
+  "data": {
+    "decision": "Deny",
+    "reason": "policy:model-not-allowed",
+    "trace": [
+      ["adapter", "bifrost"],
+      ["policy_id", "model-not-allowed"]
+    ]
+  },
+  "page_info": {"has_more": false}
+}
+```
+
+### Validation error — RFC 7807 Problem Details (HTTP 400)
+
+```bash
+curl -sS -X POST \
+  -H "Accept: application/problem+json" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{}' \
+  "https://<host>/api/v1/phenotype-router/decisions"
+```
+
+Error response (HTTP 400):
+
+```json
+{
+  "type": "https://phenotype.dev/errors/validation-failed",
+  "title": "Validation Failed",
+  "status": 400,
+  "detail": "Field 'id' is required",
+  "instance": "/api/v1/phenotype-router/decisions",
+  "code": "VALIDATION_FAILED",
+  "errors": [
+    {"field": "id", "code": "REQUIRED", "message": "Field is required"}
+  ]
+}
+```
+
+### Rate-limited (HTTP 429)
+
+```bash
+curl -sS -i -X POST \
+  -H "Accept: application/json" \
+  -H "Content-Type: application/json" \
+  "https://<host>/api/v1/phenotype-router/decisions"
+```
+
+Response headers:
+
+```
+HTTP/1.1 429 Too Many Requests
+Content-Type: application/problem+json
+Retry-After: 60
+X-RateLimit-Limit: 1000
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 1718947200
+```
+
+## API surface
+
+| Item | Kind | Description |
+|------|------|-------------|
+| `DecisionLayer` | trait | Port trait every router-decision adapter must implement |
+| `Request` | struct | Decision input (id, payload) |
+| `Decision` | enum | `Allow` or `Deny(String)` |
+| `Response` | struct | Decision output (decision + trace annotations) |
+| `DecisionError` | enum | Error envelope (`Adapter(String)`) |
+| `BifrostAdapter` | struct | Stub adapter (future Bifrost FFI bridge) |
+| `HelloWorldPort` | trait | Parity-test fixture port |
+
+## Error envelope mapping to RFC 7807
+
+When HTTP wrappers convert `DecisionError` into HTTP responses, the mapping is:
+
+| `DecisionError` variant | HTTP status | `code` (RFC 7807) |
+|-------------------------|------------:|-------------------|
+| `Adapter(_)`            | 502 | `ADAPTER_ERROR` |
+
+Validation failures (missing `id`, malformed payload) are surfaced as RFC 7807
+`validation-failed` BEFORE the decision layer is invoked (HTTP 400).
+
+## Architecture (ADR-050 / ADR-051)
+
+```
+              HTTP wrapper (axum/warp)
+                      │
+                      ▼
+       ┌──────────────────────────┐
+       │   phenotype-router       │  ← this crate (Rust)
+       │   DecisionLayer port     │
+       └──────────────────────────┘
+                      │
+           ┌──────────┴──────────┐
+           ▼                     ▼
+    BifrostAdapter         HelloWorldPort
+    (Go FFI stub)         (parity-test fixture)
+```
+
+- **ADR-050** — Bifrost-as-library integration boundary (decision layer).
+- **ADR-051** — Phenotype-owned decision layer (this crate).
+
+## Conventions
+
+This crate follows the
+[Phenotype REST API conventions](https://github.com/KooshaPari/phenotype-apps/blob/apps-extract/docs/conventions/rest-api.md):
+
+- L9 — RFC 7807 Problem Details error envelope.
+- L9.5 — `/openapi.json` published by HTTP wrappers.
+- L9.7 — `Idempotency-Key` header on POST.
+
+## Development
+
+```bash
+cargo build
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo fmt
+```
 
 ## License
 
-Dual MIT / Apache-2.0. See [`LICENSE-MIT`](LICENSE-MIT) and
-[`LICENSE-APACHE`](LICENSE-APACHE).
+MIT OR Apache-2.0 — see [LICENSE](LICENSE).

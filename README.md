@@ -198,6 +198,89 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt
 ```
 
+## REST API examples
+
+The router decision layer is exposed over HTTP at `/v1/`. All requests require
+a bearer token; all list endpoints use cursor pagination; all mutating
+endpoints accept `Idempotency-Key`; all errors follow [RFC 7807 problem+json]
+(see [`docs/conventions/rest-api.md`][convention] for the full contract).
+
+### List registered plugins (cursor pagination)
+
+```bash
+curl -sS https://router.phenotype.dev/v1/plugins?limit=20 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "data": [
+    {"id": "rate-limit", "version": "1.2.0", "tier": "standard"},
+    {"id": "smart-fallback", "version": "0.4.1", "tier": "internal"}
+  ],
+  "next_cursor": "eyJpZCI6InNtYXJ0LWZhbGxiYWNrIn0",
+  "has_more": true
+}
+```
+
+### Submit a routing decision (idempotent)
+
+```bash
+curl -sS https://router.phenotype.dev/v1/decisions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: 8d2e3a40-1f23-4f10-9b1f-3a8b8c0e1d22" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{
+    "principal": "user:42",
+    "intent": "weather",
+    "context": {"region": "us-west-2"}
+  }'
+```
+
+```json
+{
+  "decision": "allow",
+  "plugin": "smart-fallback",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+}
+```
+
+### Handle an RFC 7807 error
+
+```bash
+curl -sS -i https://router.phenotype.dev/v1/decisions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{"principal": "user:42"}'
+```
+
+```http
+HTTP/2 422
+Content-Type: application/problem+json
+X-RateLimit-Limit: 1000
+X-RateLimit-Remaining: 999
+X-RateLimit-Reset: 1719005460
+```
+
+```json
+{
+  "type": "https://phenotype.dev/probs/validation-failed",
+  "title": "Validation failed.",
+  "detail": "The 'intent' field is required.",
+  "instance": "/v1/decisions",
+  "status": 422,
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "errors": [
+    {"field": "intent", "code": "missing", "message": "field is required"}
+  ]
+}
+```
+
+[RFC 7807 problem+json]: https://www.rfc-editor.org/rfc/rfc7807
+[convention]: https://github.com/KooshaPari/phenotype-apps/blob/main/docs/conventions/rest-api.md
+
 ## License
 
 MIT OR Apache-2.0 — see [LICENSE](LICENSE).
